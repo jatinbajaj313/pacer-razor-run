@@ -88,9 +88,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (active) void applySession(data.session);
-    });
+    // The Google flow can return to this page as a full-page redirect with the
+    // tokens in either the query string or the hash. Consume them before we
+    // read the stored session, otherwise the app looks signed out (or blank)
+    // right after sign-in.
+    async function consumeRedirectTokens(): Promise<boolean> {
+      if (typeof window === "undefined") return false;
+      const search = new URLSearchParams(window.location.search);
+      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const access_token = search.get("access_token") || hash.get("access_token");
+      const refresh_token = search.get("refresh_token") || hash.get("refresh_token");
+      const errorDescription =
+        search.get("error_description") || hash.get("error_description");
+
+      if (!access_token || !refresh_token) {
+        if (errorDescription) {
+          setDomainError(errorDescription);
+          window.history.replaceState({}, "", window.location.pathname);
+        }
+        return false;
+      }
+
+      const { data, error } = await supabase.auth.setSession({ access_token, refresh_token });
+      window.history.replaceState({}, "", window.location.pathname);
+      if (error) {
+        setDomainError(error.message);
+        return false;
+      }
+      if (active) await applySession(data.session);
+      return true;
+    }
+
+    void (async () => {
+      try {
+        if (await consumeRedirectTokens()) return;
+        const { data } = await supabase.auth.getSession();
+        if (active) await applySession(data.session);
+      } catch (err) {
+        console.error(err);
+        if (active) {
+          setDomainError(
+            err instanceof Error ? err.message : "Could not finish signing you in.",
+          );
+          setSession(null);
+          setLoading(false);
+        }
+      }
+    })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
       if (event !== "SIGNED_IN" && event !== "SIGNED_OUT" && event !== "USER_UPDATED") return;
@@ -103,6 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       sub.subscription.unsubscribe();
     };
   }, [applySession]);
+
 
   const refreshProfile = useCallback(async () => {
     if (session?.user) await loadProfile(session.user);
