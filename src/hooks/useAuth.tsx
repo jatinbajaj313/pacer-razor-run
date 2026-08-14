@@ -50,8 +50,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .from("profiles")
       .insert({
         id: user.id,
-        name: (meta.full_name as string) || (meta.name as string) || user.email || "Runner",
-        avatar_url: (meta.avatar_url as string) || (meta.picture as string) || null,
+        name:
+          (meta["full_name"] as string) ||
+          (meta["name"] as string) ||
+          user.email ||
+          "Runner",
+        avatar_url: (meta["avatar_url"] as string) || (meta["picture"] as string) || null,
       })
       .select("id, name, avatar_url, org, gender, race_distance, target_time, onboarded")
       .maybeSingle();
