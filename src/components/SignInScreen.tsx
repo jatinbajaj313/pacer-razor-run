@@ -21,11 +21,12 @@ export function SignInScreen({ domainError }: { domainError: string | null }) {
       redirect_uri: window.location.origin,
       extraParams: { hd: ALLOWED_DOMAIN, prompt: "select_account" },
     });
-    if (result.error) {
+    const err = (result as { error?: unknown }).error;
+    if (err) {
       setError(
-        typeof result.error === "string"
-          ? result.error
-          : (result.error as { message?: string })?.message || "Sign-in failed. Please try again.",
+        typeof err === "string"
+          ? err
+          : (err as { message?: string })?.message || "Sign-in failed. Please try again.",
       );
       setBusy(false);
       return;
