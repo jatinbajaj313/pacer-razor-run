@@ -34,34 +34,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [domainError, setDomainError] = useState<string | null>(null);
 
   const loadProfile = useCallback(async (user: User) => {
-    const { data } = await supabase
-      .from("profiles")
-      .select("id, name, avatar_url, org, gender, race_distance, target_time, onboarded")
-      .eq("id", user.id)
-      .maybeSingle();
+    try {
+      const { data } = await supabase
+        .from("profiles")
+        .select("id, name, avatar_url, org, gender, race_distance, target_time, onboarded")
+        .eq("id", user.id)
+        .maybeSingle();
 
-    if (data) {
-      setProfile(data as Profile);
-      return;
+      if (data) {
+        setProfile(data as Profile);
+        return;
+      }
+
+      const meta = user.user_metadata ?? {};
+      const inserted = await supabase
+        .from("profiles")
+        .insert({
+          id: user.id,
+          name:
+            (meta["full_name"] as string) ||
+            (meta["name"] as string) ||
+            user.email ||
+            "Runner",
+          avatar_url: (meta["avatar_url"] as string) || (meta["picture"] as string) || null,
+        })
+        .select("id, name, avatar_url, org, gender, race_distance, target_time, onboarded")
+        .maybeSingle();
+
+      if (inserted.error) setDomainError(inserted.error.message);
+      setProfile((inserted.data as Profile) ?? null);
+    } catch (err) {
+      console.error(err);
+      setDomainError(
+        err instanceof Error ? err.message : "Could not load your profile. Please retry.",
+      );
+      setProfile(null);
     }
-
-    const meta = user.user_metadata ?? {};
-    const inserted = await supabase
-      .from("profiles")
-      .insert({
-        id: user.id,
-        name:
-          (meta["full_name"] as string) ||
-          (meta["name"] as string) ||
-          user.email ||
-          "Runner",
-        avatar_url: (meta["avatar_url"] as string) || (meta["picture"] as string) || null,
-      })
-      .select("id, name, avatar_url, org, gender, race_distance, target_time, onboarded")
-      .maybeSingle();
-
-    setProfile((inserted.data as Profile) ?? null);
   }, []);
+
 
   const applySession = useCallback(
     async (next: Session | null) => {
