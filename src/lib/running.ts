@@ -47,10 +47,10 @@ export function paceFrom(distanceKm: number, seconds: number): number | null {
 export function parseDurationInput(value: string): number | null {
   const parts = value.trim().split(":").map((p) => p.trim());
   if (parts.some((p) => p === "" || !/^\d+$/.test(p))) return null;
-  const nums = parts.map(Number);
-  if (nums.length === 1) return nums[0] * 60;
-  if (nums.length === 2) return nums[0] * 60 + nums[1];
-  if (nums.length === 3) return nums[0] * 3600 + nums[1] * 60 + nums[2];
+  const [a = 0, b = 0, c = 0] = parts.map(Number);
+  if (parts.length === 1) return a * 60;
+  if (parts.length === 2) return a * 60 + b;
+  if (parts.length === 3) return a * 3600 + b * 60 + c;
   return null;
 }
 
