@@ -14,7 +14,105 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      private_profiles: {
+        Row: {
+          age: number | null
+          created_at: string
+          height_cm: number | null
+          updated_at: string
+          user_id: string
+          weight_kg: number | null
+        }
+        Insert: {
+          age?: number | null
+          created_at?: string
+          height_cm?: number | null
+          updated_at?: string
+          user_id: string
+          weight_kg?: number | null
+        }
+        Update: {
+          age?: number | null
+          created_at?: string
+          height_cm?: number | null
+          updated_at?: string
+          user_id?: string
+          weight_kg?: number | null
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          gender: string | null
+          id: string
+          name: string
+          onboarded: boolean
+          org: string
+          race_distance: number | null
+          target_time: number | null
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          gender?: string | null
+          id: string
+          name?: string
+          onboarded?: boolean
+          org?: string
+          race_distance?: number | null
+          target_time?: number | null
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          gender?: string | null
+          id?: string
+          name?: string
+          onboarded?: boolean
+          org?: string
+          race_distance?: number | null
+          target_time?: number | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      runs: {
+        Row: {
+          created_at: string
+          distance_km: number
+          duration_seconds: number
+          id: string
+          ran_on: string
+          route: Json | null
+          source: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          distance_km: number
+          duration_seconds: number
+          id?: string
+          ran_on?: string
+          route?: Json | null
+          source?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          distance_km?: number
+          duration_seconds?: number
+          id?: string
+          ran_on?: string
+          route?: Json | null
+          source?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
