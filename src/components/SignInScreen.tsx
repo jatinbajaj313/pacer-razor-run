@@ -22,7 +22,11 @@ export function SignInScreen({ domainError }: { domainError: string | null }) {
       extraParams: { hd: ALLOWED_DOMAIN, prompt: "select_account" },
     });
     if (result.error) {
-      setError("Sign-in failed. Please try again.");
+      setError(
+        typeof result.error === "string"
+          ? result.error
+          : (result.error as { message?: string })?.message || "Sign-in failed. Please try again.",
+      );
       setBusy(false);
       return;
     }
