@@ -21,8 +21,13 @@ export function SignInScreen({ domainError }: { domainError: string | null }) {
       redirect_uri: window.location.origin,
       extraParams: { hd: ALLOWED_DOMAIN, prompt: "select_account" },
     });
-    if (result.error) {
-      setError("Sign-in failed. Please try again.");
+    const err = (result as { error?: unknown }).error;
+    if (err) {
+      setError(
+        typeof err === "string"
+          ? err
+          : (err as { message?: string })?.message || "Sign-in failed. Please try again.",
+      );
       setBusy(false);
       return;
     }
