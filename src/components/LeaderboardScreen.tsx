@@ -12,7 +12,6 @@ import {
 } from "@/lib/constants";
 
 type BoardKey = "total" | "five" | "ten" | "consistency" | "improved" | "streak";
-type RunType = "all" | "gps" | "manual";
 
 const BOARDS: { key: BoardKey; label: string; icon: typeof Trophy }[] = [
   { key: "total", label: "Total distance", icon: Route },
@@ -66,7 +65,6 @@ export function LeaderboardScreen() {
   const [board, setBoard] = useState<BoardKey>("total");
   const [dept, setDept] = useState("all");
   const [gender, setGender] = useState("all");
-  const [runType, setRunType] = useState<RunType>("all");
 
   // Department and gender options are FIXED lists — nobody can invent a new one.
   // Existing messy values ("Man", "BizFin") get folded in by the normalisers.
@@ -80,11 +78,9 @@ export function LeaderboardScreen() {
       rows.filter((r) => {
         if (dept !== "all" && normalizeOrg(r.org) !== dept) return false;
         if (gender !== "all" && normalizeGender(r.gender) !== gender) return false;
-        if (runType === "gps" && r.gps_runs <= 0) return false;
-        if (runType === "manual" && r.manual_runs <= 0) return false;
         return true;
       }),
-    [rows, dept, gender, runType],
+    [rows, dept, gender],
   );
 
   const ranked = useMemo(() => {
@@ -95,13 +91,11 @@ export function LeaderboardScreen() {
       .sort((a, b) => (asc ? a.value! - b.value! : b.value! - a.value!));
   }, [filtered, board]);
 
-  const activeFilters =
-    (dept !== "all" ? 1 : 0) + (gender !== "all" ? 1 : 0) + (runType !== "all" ? 1 : 0);
+  const activeFilters = (dept !== "all" ? 1 : 0) + (gender !== "all" ? 1 : 0);
 
   const clearFilters = () => {
     setDept("all");
     setGender("all");
-    setRunType("all");
   };
 
   const myIndex = ranked.findIndex((e) => e.row.user_id === user?.id);
@@ -135,7 +129,7 @@ export function LeaderboardScreen() {
         ))}
       </div>
 
-      <div className="mb-3 grid grid-cols-3 gap-2">
+      <div className="mb-3 grid grid-cols-2 gap-2">
         <label className="block">
           <span className="num mb-1 block text-[9px] tracking-[0.14em] text-muted-foreground uppercase">
             Department
@@ -162,21 +156,6 @@ export function LeaderboardScreen() {
                 {g}
               </option>
             ))}
-          </select>
-        </label>
-
-        <label className="block">
-          <span className="num mb-1 block text-[9px] tracking-[0.14em] text-muted-foreground uppercase">
-            Run type
-          </span>
-          <select
-            value={runType}
-            onChange={(e) => setRunType(e.target.value as RunType)}
-            className={SELECT_CLASS}
-          >
-            <option value="all">Any</option>
-            <option value="gps">GPS</option>
-            <option value="manual">Manual</option>
           </select>
         </label>
       </div>
@@ -249,15 +228,6 @@ export function LeaderboardScreen() {
                 <p className="truncate font-semibold">
                   {entry.row.name}
                   {isMe && <span className="ml-2 text-[10px] text-primary">YOU</span>}
-                </p>
-                <p className="truncate text-[11px] text-muted-foreground">
-                  {[
-                    entry.row.org ? normalizeOrg(entry.row.org) : null,
-                    normalizeGender(entry.row.gender),
-                    `${entry.row.gps_runs} GPS · ${entry.row.manual_runs} manual`,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
                 </p>
               </div>
               <p className="num font-bold">{entry.label}</p>
