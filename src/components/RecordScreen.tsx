@@ -1,6 +1,17 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Satellite, TriangleAlert, Sparkles, PencilLine, Trophy, X } from "lucide-react";
+import {
+  Satellite,
+  TriangleAlert,
+  Sparkles,
+  PencilLine,
+  Trophy,
+  X,
+  Upload,
+  RotateCcw,
+  Pause,
+  Play,
+} from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,15 +21,29 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { GpxImport } from "@/components/GpxImport";
 import { useAuth } from "@/hooks/useAuth";
 import { useRunTracker } from "@/hooks/useRunTracker";
 import {
+  GPS_ACCURACY_LIMIT_M,
+  GPS_ACCURACY_WARN_M,
+  checkRun,
   formatDuration,
   formatPace,
   paceFrom,
   parseDurationInput,
   type GeoPoint,
 } from "@/lib/running";
+
+/**
+ * Whether to save the full GPS trace of a run.
+ *
+ * Set to false: a route recorded from someone's front door is their home
+ * address, and this app holds colleagues' data on a personal project. Distance,
+ * duration and pace drive every board and the training plan without it. Flip to
+ * true only once route maps are a feature someone has actually approved.
+ */
+const STORE_ROUTES = false;
 
 type Summary = {
   distanceKm: number;
@@ -27,11 +52,16 @@ type Summary = {
   totalRunners: number;
 };
 
+/** Local calendar date, not UTC — a 5am Bengaluru run belongs to today. */
+const localToday = () => new Date().toLocaleDateString("en-CA");
+
 function signalTone(accuracy: number | null) {
   if (accuracy == null) return { label: "Searching…", color: "text-muted-foreground" };
-  if (accuracy < 15) return { label: `Strong · ${Math.round(accuracy)}m`, color: "text-success" };
-  if (accuracy < 35) return { label: `Fair · ${Math.round(accuracy)}m`, color: "text-warning" };
-  return { label: `Weak · ${Math.round(accuracy)}m`, color: "text-danger" };
+  const m = Math.round(accuracy);
+  if (accuracy > GPS_ACCURACY_LIMIT_M) return { label: `Too weak · ${m}m`, color: "text-danger" };
+  if (accuracy > GPS_ACCURACY_WARN_M) return { label: `Weak · ${m}m`, color: "text-warning" };
+  if (accuracy < 15) return { label: `Strong · ${m}m`, color: "text-success" };
+  return { label: `Fair · ${m}m`, color: "text-warning" };
 }
 
 export function RecordScreen() {
@@ -39,7 +69,7 @@ export function RecordScreen() {
   const tracker = useRunTracker();
   const [saving, setSaving] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [manualDate, setManualDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [manualDate, setManualDate] = useState(localToday);
   const [manualDistance, setManualDistance] = useState("");
   const [manualTime, setManualTime] = useState("");
 
@@ -53,23 +83,41 @@ export function RecordScreen() {
     return { rank: index >= 0 ? index + 1 : null, totalRunners: ordered.length };
   }
 
-
+  /**
+   * The only way a run reaches the database. Every path — GPS, manual, imported,
+   * simulated — goes through checkRun here, so one implausible entry can't sit
+   * on top of five boards until someone notices.
+   */
   async function saveRun(input: {
     distanceKm: number;
     seconds: number;
-    source: "gps" | "manual";
+    source: "gps" | "manual" | "import";
     ranOn?: string;
     route?: GeoPoint[];
   }) {
     if (!user) return false;
+
+    const check = checkRun(input.distanceKm, input.seconds);
+    if (!check.ok) {
+      toast.error(check.reason);
+      return false;
+    }
+
+    const ranOn = input.ranOn ?? localToday();
+    if (ranOn > localToday()) {
+      toast.error("That date is in the future.");
+      return false;
+    }
+
     setSaving(true);
+    const keepRoute = STORE_ROUTES && input.route && input.route.length > 1;
     const { error } = await supabase.from("runs").insert({
       user_id: user.id,
       distance_km: Number(input.distanceKm.toFixed(3)),
-      duration_seconds: input.seconds,
+      duration_seconds: Math.round(input.seconds),
       source: input.source,
-      ran_on: input.ranOn ?? new Date().toISOString().slice(0, 10),
-      route: input.route && input.route.length > 1 ? input.route : null,
+      ran_on: ranOn,
+      route: keepRoute ? input.route : null,
     });
     if (error) {
       setSaving(false);
@@ -78,7 +126,12 @@ export function RecordScreen() {
     }
     const { rank, totalRunners } = await totalDistanceRank();
     setSaving(false);
-    setSummary({ distanceKm: input.distanceKm, seconds: input.seconds, rank, totalRunners });
+    setSummary({
+      distanceKm: input.distanceKm,
+      seconds: Math.round(input.seconds),
+      rank,
+      totalRunners,
+    });
     return true;
   }
 
@@ -88,6 +141,11 @@ export function RecordScreen() {
       toast.error("That run was too short to save.");
       tracker.reset();
       return;
+    }
+    if (result.estimatedKm > 0.05) {
+      toast.warning(
+        `${result.estimatedKm.toFixed(2)} km of this run is estimated — the app was in the background for ${formatDuration(result.backgroundSeconds)}.`,
+      );
     }
     const saved = await saveRun({
       distanceKm: result.distanceKm,
@@ -111,8 +169,12 @@ export function RecordScreen() {
   async function submitManual() {
     const km = Number(manualDistance);
     const seconds = parseDurationInput(manualTime);
-    if (!km || km <= 0 || km > 100 || !seconds || seconds < 60) {
-      toast.error("Check the distance and time — e.g. 5.2 km and 32:00.");
+    if (!Number.isFinite(km) || km <= 0) {
+      toast.error("Enter a distance, e.g. 5.2");
+      return;
+    }
+    if (seconds == null) {
+      toast.error("Enter a time as mm:ss, e.g. 32:00");
       return;
     }
     const saved = await saveRun({
@@ -171,6 +233,8 @@ export function RecordScreen() {
   }
 
   const isRunning = tracker.status === "running";
+  const isPaused = tracker.status === "paused";
+  const isActive = isRunning || isPaused;
 
   return (
     <section className="px-5 pb-32 pt-10">
@@ -189,12 +253,39 @@ export function RecordScreen() {
         </span>
       </header>
 
+      {/* A run the browser threw away mid-session */}
+      {tracker.recoverable && !isActive && (
+        <div className="card-surface mt-6 border border-warning/40 p-4">
+          <p className="flex items-center gap-2 text-sm font-semibold text-warning">
+            <RotateCcw className="size-4" />
+            Unfinished run found
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {tracker.recoverable.distanceKm.toFixed(2)} km already recorded. Pick it up or bin it.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <Button
+              onClick={tracker.recover}
+              className="h-11 flex-1 rounded-lg bg-gradient-data text-sm font-semibold text-primary-foreground"
+            >
+              Resume
+            </Button>
+            <Button
+              onClick={tracker.discardRecovery}
+              className="h-11 rounded-lg border border-border bg-card text-sm font-semibold text-muted-foreground"
+            >
+              Discard
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="card-surface mt-8 px-6 py-10 text-center">
         <p className="num text-[5.5rem] font-bold leading-none text-gradient-data">
           {tracker.distanceKm.toFixed(2)}
         </p>
         <p className="mt-1 text-sm font-medium tracking-widest text-muted-foreground uppercase">
-          kilometres
+          {isPaused ? "kilometres · paused" : "kilometres"}
         </p>
 
         <div className="mt-8 grid grid-cols-3 gap-3">
@@ -204,6 +295,28 @@ export function RecordScreen() {
         </div>
       </div>
 
+      {tracker.noFixYet && !tracker.gpsError && (
+        <p className="mt-4 text-center text-sm text-muted-foreground">
+          Waiting for a GPS fix — this can take up to a minute outdoors.
+        </p>
+      )}
+
+      {tracker.signalWeak && !tracker.gpsError && (
+        <p className="mt-4 flex gap-2 rounded-lg border border-border bg-card px-4 py-3 text-sm text-warning">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+          Weak GPS signal. Distance may under-record until it improves.
+        </p>
+      )}
+
+      {tracker.estimatedKm > 0.05 && (
+        <p className="mt-4 flex gap-2 rounded-lg border border-warning/40 bg-card px-4 py-3 text-sm text-warning">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+          {tracker.estimatedKm.toFixed(2)} km of this run is estimated. The app was in the
+          background for {formatDuration(tracker.backgroundSeconds)}, so that stretch is a straight
+          line, not your real route.
+        </p>
+      )}
+
       {tracker.gpsError && (
         <p className="mt-4 flex gap-2 rounded-lg border border-border bg-card px-4 py-3 text-sm text-warning">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" />
@@ -212,14 +325,24 @@ export function RecordScreen() {
       )}
 
       <div className="mt-6">
-        {isRunning ? (
-          <Button
-            onClick={handleStop}
-            disabled={saving}
-            className="h-16 w-full rounded-2xl border border-border bg-card text-lg font-bold text-record hover:bg-elevated"
-          >
-            {saving ? "Saving…" : "Stop & save run"}
-          </Button>
+        {isActive ? (
+          <div className="space-y-3">
+            <Button
+              onClick={handleStop}
+              disabled={saving}
+              className="h-16 w-full rounded-2xl border border-border bg-card text-lg font-bold text-record hover:bg-elevated"
+            >
+              {saving ? "Saving…" : "Stop & save run"}
+            </Button>
+            <Button
+              onClick={isPaused ? tracker.resume : tracker.pause}
+              disabled={saving}
+              className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-border bg-card text-sm font-semibold text-muted-foreground hover:bg-elevated"
+            >
+              {isPaused ? <Play className="size-4" /> : <Pause className="size-4" />}
+              {isPaused ? "Resume" : "Pause"}
+            </Button>
+          </div>
         ) : (
           <Button
             onClick={() => void tracker.start()}
@@ -229,7 +352,8 @@ export function RecordScreen() {
           </Button>
         )}
         <p className="mt-3 text-center text-xs text-muted-foreground">
-          Keep Pacer open — switching apps pauses GPS tracking. We hold the screen awake for you.
+          Keep this screen open. Locking the phone or switching apps stops GPS — we keep the screen
+          awake, but we can't record in the background.
         </p>
       </div>
 
@@ -247,6 +371,7 @@ export function RecordScreen() {
               <Input
                 id="m-date"
                 type="date"
+                max={localToday()}
                 value={manualDate}
                 onChange={(e) => setManualDate(e.target.value)}
                 className="num h-12 rounded-lg border-input bg-elevated"
@@ -290,15 +415,39 @@ export function RecordScreen() {
           </CollapsibleContent>
         </Collapsible>
 
-        <button
-          type="button"
-          onClick={simulateRun}
-          disabled={saving}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border px-4 py-3 text-xs font-medium text-muted-foreground"
-        >
-          <Sparkles className="size-3.5" />
-          Simulate a run (demo, no GPS needed)
-        </button>
+        <Collapsible>
+          <CollapsibleTrigger className="card-surface flex w-full items-center gap-3 px-4 py-4 text-left text-sm font-medium">
+            <Upload className="size-4 text-primary" />
+            Import from Strava, Garmin or your watch
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-2">
+            <GpxImport
+              includeRoute={STORE_ROUTES}
+              onImport={async (run) => {
+                const saved = await saveRun({
+                  distanceKm: run.distanceKm,
+                  seconds: run.movingSeconds,
+                  source: "import",
+                  ranOn: run.startedAt ? run.startedAt.slice(0, 10) : undefined,
+                  route: run.route,
+                });
+                if (!saved) throw new Error("save failed");
+              }}
+            />
+          </CollapsibleContent>
+        </Collapsible>
+
+        {import.meta.env.DEV && (
+          <button
+            type="button"
+            onClick={simulateRun}
+            disabled={saving}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border px-4 py-3 text-xs font-medium text-muted-foreground"
+          >
+            <Sparkles className="size-3.5" />
+            Simulate a run (dev only)
+          </button>
+        )}
       </div>
     </section>
   );
