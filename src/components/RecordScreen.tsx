@@ -46,16 +46,13 @@ export function RecordScreen() {
   const signal = signalTone(tracker.accuracy);
 
   async function totalDistanceRank(): Promise<{ rank: number | null; totalRunners: number }> {
-    const { data } = await supabase.from("runs").select("user_id, distance_km");
+    const { data } = await supabase.rpc("leaderboard_totals");
     if (!data || !user) return { rank: null, totalRunners: 0 };
-    const totals = new Map<string, number>();
-    for (const row of data) {
-      totals.set(row.user_id, (totals.get(row.user_id) ?? 0) + Number(row.distance_km));
-    }
-    const ordered = [...totals.entries()].sort((a, b) => b[1] - a[1]);
-    const index = ordered.findIndex(([id]) => id === user.id);
+    const ordered = [...data].sort((a, b) => Number(b.total_km) - Number(a.total_km));
+    const index = ordered.findIndex((row) => row.user_id === user.id);
     return { rank: index >= 0 ? index + 1 : null, totalRunners: ordered.length };
   }
+
 
   async function saveRun(input: {
     distanceKm: number;
