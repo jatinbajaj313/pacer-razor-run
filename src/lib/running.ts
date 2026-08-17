@@ -43,19 +43,85 @@ export function paceFrom(distanceKm: number, seconds: number): number | null {
   return seconds / distanceKm;
 }
 
-/** "MM:SS" or "H:MM:SS" -> seconds */
+/**
+ * "MM:SS" or "H:MM:SS" -> seconds.
+ * A bare number is read as minutes ("25" = 25:00).
+ * Rejects out-of-range parts, so "5:75" and "10:60" no longer sail through
+ * as 6:15 and 11:00.
+ */
 export function parseDurationInput(value: string): number | null {
   const parts = value.trim().split(":").map((p) => p.trim());
+  if (parts.length > 3) return null;
   if (parts.some((p) => p === "" || !/^\d+$/.test(p))) return null;
-  const [a = 0, b = 0, c = 0] = parts.map(Number);
-  if (parts.length === 1) return a * 60;
-  if (parts.length === 2) return a * 60 + b;
-  if (parts.length === 3) return a * 3600 + b * 60 + c;
-  return null;
+  const nums = parts.map(Number);
+  if (nums.some((n) => !Number.isFinite(n))) return null;
+
+  let seconds: number;
+  if (parts.length === 1) {
+    seconds = nums[0] * 60;
+  } else if (parts.length === 2) {
+    if (nums[1] > 59) return null; // "10:60" is not a time
+    seconds = nums[0] * 60 + nums[1];
+  } else {
+    if (nums[1] > 59 || nums[2] > 59) return null;
+    seconds = nums[0] * 3600 + nums[1] * 60 + nums[2];
+  }
+
+  if (seconds <= 0) return null; // a run cannot take zero time
+  if (seconds > MAX_RUN_SECONDS) return null;
+  return seconds;
 }
 
 export const GPS_ACCURACY_LIMIT_M = 40;
 export const MIN_MOVE_M = 2;
-export const MAX_SPEED_KMH = 30;
+
+/**
+ * Plausibility limits, applied to MANUAL entries as well as GPS.
+ * The men's 10K road world record is about 26:24, i.e. 2:38/km and 22.7 km/h,
+ * so 2:45/km sits just outside the fastest pace any human has recorded while
+ * staying far quicker than anyone at a corporate fun run.
+ */
+export const MIN_PACE_SEC_PER_KM = 165; // 2:45/km  -> 21.8 km/h
+export const MAX_PACE_SEC_PER_KM = 900; // 15:00/km -> slow walk
+export const MIN_RUN_KM = 0.3;
+export const MAX_RUN_KM = 100;
+export const MAX_RUN_SECONDS = 24 * 3600;
+export const MAX_SPEED_KMH = 3600 / MIN_PACE_SEC_PER_KM; // 21.8, was 30
+
+export type RunCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Validate a run before saving. Use for manual entry AND as a final check on a
+ * finished GPS run — one implausible entry sits at the top of five boards
+ * until someone deletes it.
+ */
+export function checkRun(distanceKm: number, seconds: number): RunCheck {
+  if (!Number.isFinite(distanceKm) || !Number.isFinite(seconds)) {
+    return { ok: false, reason: "Enter a distance and a time." };
+  }
+  if (distanceKm < MIN_RUN_KM) {
+    return { ok: false, reason: `Runs need to be at least ${MIN_RUN_KM} km.` };
+  }
+  if (distanceKm > MAX_RUN_KM) {
+    return { ok: false, reason: `${distanceKm} km looks like a typo — check the distance.` };
+  }
+  if (seconds <= 0) {
+    return { ok: false, reason: "Enter a time like 25:00." };
+  }
+  if (seconds > MAX_RUN_SECONDS) {
+    return { ok: false, reason: "That time is longer than a day — check the format." };
+  }
+  const pace = seconds / distanceKm;
+  if (pace > MAX_PACE_SEC_PER_KM) {
+    return { ok: false, reason: "That time is far too slow for the distance — check both fields." };
+  }
+  if (pace < MIN_PACE_SEC_PER_KM) {
+    return {
+      ok: false,
+      reason: `${formatPace(pace)}/km would beat the world record. Check the distance and time.`,
+    };
+  }
+  return { ok: true };
+}
 
 export const RACE_DATE = "2026-09-06";
