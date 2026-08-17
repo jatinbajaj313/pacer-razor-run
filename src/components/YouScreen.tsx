@@ -92,7 +92,7 @@ export function YouScreen() {
         {profile?.avatar_url ? (
           <img src={profile.avatar_url} alt={profile.name} className="size-12 rounded-full" />
         ) : (
-          <span className="flex size-12 items-center justify-center rounded-full bg-gradient-brand font-bold text-primary-foreground">
+          <span className="flex size-12 items-center justify-center rounded-full bg-gradient-data font-bold text-primary-foreground">
             {(profile?.name ?? "R").slice(0, 1)}
           </span>
         )}

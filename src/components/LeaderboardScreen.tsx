@@ -83,7 +83,7 @@ export function LeaderboardScreen() {
             onClick={() => setBoard(key)}
             className={`flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
               board === key
-                ? "border-transparent bg-gradient-brand text-primary-foreground"
+                ? "border-transparent bg-gradient-data text-primary-foreground"
                 : "border-border bg-card text-muted-foreground"
             }`}
           >
@@ -173,7 +173,7 @@ function Avatar({ row }: { row: BoardRow }) {
     );
   }
   return (
-    <span className="flex size-9 items-center justify-center rounded-full bg-gradient-brand text-xs font-bold text-primary-foreground">
+    <span className="flex size-9 items-center justify-center rounded-full bg-gradient-data text-xs font-bold text-primary-foreground">
       {row.name.slice(0, 1).toUpperCase()}
     </span>
   );

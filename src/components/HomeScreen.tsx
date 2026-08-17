@@ -118,7 +118,7 @@ export function HomeScreen({ onGoBoard }: { onGoBoard: () => void }) {
           {last7.map((d) => (
             <div key={d.key} className="flex flex-1 flex-col items-center gap-1">
               <div
-                className="w-full rounded-t bg-gradient-brand"
+                className="w-full rounded-t bg-gradient-data"
                 style={{ height: `${Math.max(3, (d.km / maxKm) * 80)}px` }}
               />
               <span className="text-[10px] text-muted-foreground">{d.label}</span>
