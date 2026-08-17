@@ -118,6 +118,25 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      leaderboard_boards: {
+        Args: never
+        Returns: {
+          active_days: number
+          avatar_url: string
+          best_10k_seconds: number
+          best_5k_seconds: number
+          gender: string
+          gps_runs: number
+          improvement_pct: number
+          manual_runs: number
+          name: string
+          org: string
+          run_count: number
+          streak_days: number
+          total_km: number
+          user_id: string
+        }[]
+      }
       leaderboard_totals: {
         Args: never
         Returns: {
