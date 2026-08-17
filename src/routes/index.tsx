@@ -40,8 +40,8 @@ function PacerApp() {
 }
 
 function Shell() {
-  const { loading, session, profile, domainError, signOut } = useAuth();
-  const [tab, setTab] = useState<TabKey>("record");
+  const { loading, session, profile, domainError } = useAuth();
+  const [tab, setTab] = useState<TabKey>("home");
 
   if (loading) {
     return (
@@ -63,16 +63,17 @@ function Shell() {
 
   return (
     <div className="mx-auto min-h-screen w-full max-w-md">
-      <RecordScreen />
-      <button
-        type="button"
-        onClick={() => void signOut()}
-        aria-label="Sign out"
-        className="fixed right-4 top-4 z-40 rounded-full border border-border bg-card p-2 text-muted-foreground"
-      >
-        <LogOut className="size-4" />
-      </button>
-      <BottomNav active={tab} onSelect={setTab} enabled={["record"]} />
+      {tab === "home" && <HomeScreen onGoBoard={() => setTab("board")} />}
+      {tab === "record" && <RecordScreen />}
+      {tab === "board" && <LeaderboardScreen />}
+      {tab === "plan" && <PlanScreen />}
+      {tab === "you" && <YouScreen />}
+      <BottomNav
+        active={tab}
+        onSelect={setTab}
+        enabled={["home", "record", "board", "plan", "you"]}
+      />
     </div>
   );
 }
+
