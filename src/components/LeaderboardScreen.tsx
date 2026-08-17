@@ -3,6 +3,13 @@ import { Flame, Target, TrendingUp, Trophy, Calendar, Route, X } from "lucide-re
 import { useAuth } from "@/hooks/useAuth";
 import { useLeaderboard, type BoardRow } from "@/hooks/useLeaderboard";
 import { formatDuration } from "@/lib/running";
+import {
+  DEPARTMENTS,
+  GENDERS,
+  UNLISTED,
+  normalizeGender,
+  normalizeOrg,
+} from "@/lib/constants";
 
 type BoardKey = "total" | "five" | "ten" | "consistency" | "improved" | "streak";
 type RunType = "all" | "gps" | "manual";
@@ -61,36 +68,23 @@ export function LeaderboardScreen() {
   const [gender, setGender] = useState("all");
   const [runType, setRunType] = useState<RunType>("all");
 
-  // Option lists come from whoever is actually on the board, so they always match the data.
-  const departments = useMemo(
-    () =>
-      [...new Set(rows.map((r) => r.org).filter((o): o is string => !!o))].sort((a, b) =>
-        a.localeCompare(b),
-      ),
+  // Department and gender options are FIXED lists — nobody can invent a new one.
+  // Existing messy values ("Man", "BizFin") get folded in by the normalisers.
+  const hasUnlisted = useMemo(
+    () => rows.some((r) => normalizeOrg(r.org) === UNLISTED),
     [rows],
   );
-  const genders = useMemo(
-    () =>
-      [...new Set(rows.map((r) => r.gender).filter((g): g is string => !!g))].sort((a, b) =>
-        a.localeCompare(b),
-      ),
-    [rows],
-  );
-
-  // If a filtered-on value disappears from the data, fall back rather than showing an empty board.
-  const deptValue = dept !== "all" && !departments.includes(dept) ? "all" : dept;
-  const genderValue = gender !== "all" && !genders.includes(gender) ? "all" : gender;
 
   const filtered = useMemo(
     () =>
       rows.filter((r) => {
-        if (deptValue !== "all" && r.org !== deptValue) return false;
-        if (genderValue !== "all" && r.gender !== genderValue) return false;
+        if (dept !== "all" && normalizeOrg(r.org) !== dept) return false;
+        if (gender !== "all" && normalizeGender(r.gender) !== gender) return false;
         if (runType === "gps" && r.gps_runs <= 0) return false;
         if (runType === "manual" && r.manual_runs <= 0) return false;
         return true;
       }),
-    [rows, deptValue, genderValue, runType],
+    [rows, dept, gender, runType],
   );
 
   const ranked = useMemo(() => {
@@ -102,7 +96,7 @@ export function LeaderboardScreen() {
   }, [filtered, board]);
 
   const activeFilters =
-    (deptValue !== "all" ? 1 : 0) + (genderValue !== "all" ? 1 : 0) + (runType !== "all" ? 1 : 0);
+    (dept !== "all" ? 1 : 0) + (gender !== "all" ? 1 : 0) + (runType !== "all" ? 1 : 0);
 
   const clearFilters = () => {
     setDept("all");
@@ -146,17 +140,14 @@ export function LeaderboardScreen() {
           <span className="num mb-1 block text-[9px] tracking-[0.14em] text-muted-foreground uppercase">
             Department
           </span>
-          <select
-            value={deptValue}
-            onChange={(e) => setDept(e.target.value)}
-            className={SELECT_CLASS}
-          >
+          <select value={dept} onChange={(e) => setDept(e.target.value)} className={SELECT_CLASS}>
             <option value="all">All</option>
-            {departments.map((d) => (
+            {DEPARTMENTS.map((d) => (
               <option key={d} value={d}>
                 {d}
               </option>
             ))}
+            {hasUnlisted && <option value={UNLISTED}>{UNLISTED}</option>}
           </select>
         </label>
 
@@ -164,13 +155,9 @@ export function LeaderboardScreen() {
           <span className="num mb-1 block text-[9px] tracking-[0.14em] text-muted-foreground uppercase">
             Gender
           </span>
-          <select
-            value={genderValue}
-            onChange={(e) => setGender(e.target.value)}
-            className={SELECT_CLASS}
-          >
+          <select value={gender} onChange={(e) => setGender(e.target.value)} className={SELECT_CLASS}>
             <option value="all">Everyone</option>
-            {genders.map((g) => (
+            {GENDERS.map((g) => (
               <option key={g} value={g}>
                 {g}
               </option>
@@ -222,7 +209,7 @@ export function LeaderboardScreen() {
             <div className="min-w-0 flex-1">
               <p className="truncate font-semibold">{chase.row.name}</p>
               <p className="truncate text-xs text-muted-foreground">
-                {chase.row.org ?? "—"} · rank {myIndex}
+                {normalizeOrg(chase.row.org)} · rank {myIndex}
               </p>
             </div>
             <p className="num text-lg font-bold">{chase.label}</p>
@@ -265,8 +252,8 @@ export function LeaderboardScreen() {
                 </p>
                 <p className="truncate text-[11px] text-muted-foreground">
                   {[
-                    entry.row.org,
-                    entry.row.gender,
+                    entry.row.org ? normalizeOrg(entry.row.org) : null,
+                    normalizeGender(entry.row.gender),
                     `${entry.row.gps_runs} GPS · ${entry.row.manual_runs} manual`,
                   ]
                     .filter(Boolean)
