@@ -13,15 +13,44 @@ export type TrackerStatus = "idle" | "running" | "paused";
 
 type WakeLockLike = { release: () => Promise<void>; released: boolean };
 
+/** A stretch where the browser was suspended and no GPS arrived. */
+export type BackgroundGap = { seconds: number; straightLineKm: number };
+
+const DRAFT_KEY = "pacer:run-in-progress";
+/** Ignore blips; longer than this counts as a real background gap. */
+const GAP_THRESHOLD_SECONDS = 15;
+
+type Draft = {
+  startedAtEpoch: number;
+  bankedSeconds: number;
+  distanceKm: number;
+  estimatedKm: number;
+  gaps: BackgroundGap[];
+  route: GeoPoint[];
+  savedAt: number;
+};
+
+function readDraft(): Draft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    return raw ? (JSON.parse(raw) as Draft) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function useRunTracker() {
   const [status, setStatus] = useState<TrackerStatus>("idle");
   const [distanceKm, setDistanceKm] = useState(0);
+  const [estimatedKm, setEstimatedKm] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [accuracy, setAccuracy] = useState<number | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [route, setRoute] = useState<GeoPoint[]>([]);
   const [currentPace, setCurrentPace] = useState<number | null>(null);
   const [fixCount, setFixCount] = useState(0);
+  const [gaps, setGaps] = useState<BackgroundGap[]>([]);
+  const [recoverable, setRecoverable] = useState<Draft | null>(null);
 
   const watchId = useRef<number | null>(null);
   const timerId = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -31,10 +60,49 @@ export function useRunTracker() {
   const recent = useRef<{ km: number; t: number }[]>([]);
   const wakeLock = useRef<WakeLockLike | null>(null);
   const paused = useRef(false);
+  const hiddenAt = useRef<number | null>(null);
+  const gapPending = useRef<number | null>(null);
 
   const avgPace = paceFrom(distanceKm, elapsed);
   const signalWeak = accuracy != null && accuracy > GPS_ACCURACY_WARN_M;
   const noFixYet = status !== "idle" && fixCount === 0;
+  const backgroundSeconds = gaps.reduce((a, g) => a + g.seconds, 0);
+
+  // ---------- draft persistence: an iOS tab discard shouldn't erase the run ----------
+  const saveDraft = useCallback(() => {
+    if (!startedAt.current && bankedSeconds.current === 0) return;
+    const draft: Draft = {
+      startedAtEpoch: startedAt.current ?? 0,
+      bankedSeconds: bankedSeconds.current,
+      distanceKm,
+      estimatedKm,
+      gaps,
+      route,
+      savedAt: Date.now(),
+    };
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    } catch {
+      /* storage blocked — tracking still works, just no recovery */
+    }
+  }, [distanceKm, estimatedKm, gaps, route]);
+
+  const clearDraft = useCallback(() => {
+    try {
+      localStorage.removeItem(DRAFT_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    const d = readDraft();
+    if (d && Date.now() - d.savedAt < 6 * 3600 * 1000 && d.distanceKm > 0.05) {
+      setRecoverable(d);
+    } else if (d) {
+      clearDraft();
+    }
+  }, [clearDraft]);
 
   const releaseWakeLock = useCallback(() => {
     const lock = wakeLock.current;
@@ -51,7 +119,7 @@ export function useRunTracker() {
       ).wakeLock;
       if (wl && !wakeLock.current) wakeLock.current = await wl.request("screen");
     } catch {
-      /* wake lock is best-effort */
+      /* best effort */
     }
   }, []);
 
@@ -69,16 +137,32 @@ export function useRunTracker() {
 
   useEffect(() => stopSensors, [stopSensors]);
 
-  // A screen lock silently drops the wake lock. Take it again when we come back.
+  // ---------- background handling ----------
   useEffect(() => {
+    const onHidden = () => {
+      if (status !== "running") return;
+      hiddenAt.current = Date.now();
+      saveDraft();
+    };
     const onVisible = () => {
-      if (document.visibilityState === "visible" && status === "running") {
-        void requestWakeLock();
+      if (status !== "running") return;
+      void requestWakeLock();
+      if (hiddenAt.current) {
+        const away = (Date.now() - hiddenAt.current) / 1000;
+        hiddenAt.current = null;
+        if (away >= GAP_THRESHOLD_SECONDS) gapPending.current = away;
       }
     };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [status, requestWakeLock]);
+    const onVisibility = () =>
+      document.visibilityState === "hidden" ? onHidden() : onVisible();
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onHidden);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onHidden);
+    };
+  }, [status, requestWakeLock, saveDraft]);
 
   const handlePosition = useCallback((pos: GeolocationPosition) => {
     const acc = pos.coords.accuracy ?? 999;
@@ -95,7 +179,6 @@ export function useRunTracker() {
     };
     const prev = lastPoint.current;
 
-    // FIRST FIX: anchor here, nothing to measure yet.
     if (!prev) {
       lastPoint.current = point;
       setRoute((r) => [...r, point]);
@@ -104,14 +187,26 @@ export function useRunTracker() {
 
     const meters = haversineMeters(prev.lat, prev.lng, point.lat, point.lng);
 
-    // Too small to be real movement: KEEP the old anchor, or a slow walk of
-    // 1.5 m hops accumulates nothing at all while the anchor creeps forward.
+    // First fix after a background gap: this straight line is a guess, not a
+    // measurement. Count it, but book it as estimated so the UI can say so.
+    const gapSeconds = gapPending.current;
+    if (gapSeconds != null) {
+      gapPending.current = null;
+      lastPoint.current = point;
+      setRoute((r) => [...r, point]);
+      const km = meters / 1000;
+      setGaps((g) => [...g, { seconds: gapSeconds, straightLineKm: km }]);
+      setEstimatedKm((e) => e + km);
+      setDistanceKm((d) => d + km);
+      recent.current = [];
+      setCurrentPace(null);
+      return;
+    }
+
     if (meters < MIN_MOVE_M) return;
 
     const dtSeconds = Math.max(0.5, (point.t - prev.t) / 1000);
     const speedKmh = meters / 1000 / (dtSeconds / 3600);
-    // Implausible hop: reject the reading AND keep the old anchor, so the
-    // bogus position can't become the baseline for the next measurement.
     if (speedKmh > MAX_GPS_JITTER_KMH) return;
 
     lastPoint.current = point;
@@ -138,42 +233,7 @@ export function useRunTracker() {
     }
   }, []);
 
-  const start = useCallback(async () => {
-    setGpsError(null);
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setGpsError("This device has no GPS available. Use manual entry instead.");
-      return;
-    }
-
-    // Tell the user up front if location was blocked earlier — otherwise the
-    // browser never shows a prompt again and the app just looks broken.
-    try {
-      const perm = await navigator.permissions?.query({
-        name: "geolocation" as PermissionName,
-      });
-      if (perm?.state === "denied") {
-        setGpsError(
-          "Location is blocked for this site. Tap the padlock in the address bar, allow Location, then reload — or log the run manually.",
-        );
-        return;
-      }
-    } catch {
-      /* Permissions API missing (older Safari) — fall through and just ask. */
-    }
-
-    setDistanceKm(0);
-    setElapsed(0);
-    setRoute([]);
-    setCurrentPace(null);
-    setAccuracy(null);
-    setFixCount(0);
-    lastPoint.current = null;
-    recent.current = [];
-    bankedSeconds.current = 0;
-    paused.current = false;
-    startedAt.current = Date.now();
-    setStatus("running");
-
+  const beginWatch = useCallback(() => {
     watchId.current = navigator.geolocation.watchPosition(
       handlePosition,
       (err) => {
@@ -185,10 +245,78 @@ export function useRunTracker() {
       },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 },
     );
-
     timerId.current = setInterval(tick, 250);
     void requestWakeLock();
   }, [handlePosition, tick, requestWakeLock]);
+
+  const start = useCallback(async () => {
+    setGpsError(null);
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setGpsError("This device has no GPS available. Use manual entry instead.");
+      return;
+    }
+
+    try {
+      const perm = await navigator.permissions?.query({
+        name: "geolocation" as PermissionName,
+      });
+      if (perm?.state === "denied") {
+        setGpsError(
+          "Location is blocked for this site. Tap the padlock in the address bar, allow Location, then reload — or log the run manually.",
+        );
+        return;
+      }
+    } catch {
+      /* Permissions API unavailable — just ask. */
+    }
+
+    clearDraft();
+    setRecoverable(null);
+    setDistanceKm(0);
+    setEstimatedKm(0);
+    setElapsed(0);
+    setRoute([]);
+    setGaps([]);
+    setCurrentPace(null);
+    setAccuracy(null);
+    setFixCount(0);
+    lastPoint.current = null;
+    recent.current = [];
+    bankedSeconds.current = 0;
+    paused.current = false;
+    hiddenAt.current = null;
+    gapPending.current = null;
+    startedAt.current = Date.now();
+    setStatus("running");
+    beginWatch();
+  }, [beginWatch, clearDraft]);
+
+  /** Pick up a run the browser threw away. */
+  const recover = useCallback(() => {
+    const d = recoverable;
+    if (!d) return;
+    setDistanceKm(d.distanceKm);
+    setEstimatedKm(d.estimatedKm);
+    setGaps(d.gaps ?? []);
+    setRoute(d.route ?? []);
+    bankedSeconds.current =
+      d.bankedSeconds + (d.startedAtEpoch ? (d.savedAt - d.startedAtEpoch) / 1000 : 0);
+    setElapsed(bankedSeconds.current);
+    lastPoint.current = null;
+    recent.current = [];
+    paused.current = false;
+    hiddenAt.current = null;
+    gapPending.current = null;
+    startedAt.current = Date.now();
+    setRecoverable(null);
+    setStatus("running");
+    beginWatch();
+  }, [recoverable, beginWatch]);
+
+  const discardRecovery = useCallback(() => {
+    setRecoverable(null);
+    clearDraft();
+  }, [clearDraft]);
 
   const pause = useCallback(() => {
     if (status !== "running") return;
@@ -197,9 +325,11 @@ export function useRunTracker() {
       startedAt.current = null;
     }
     paused.current = true;
-    lastPoint.current = null; // don't draw a straight line across the break
+    lastPoint.current = null;
+    gapPending.current = null;
     setStatus("paused");
-  }, [status]);
+    saveDraft();
+  }, [status, saveDraft]);
 
   const resume = useCallback(() => {
     if (status !== "paused") return;
@@ -215,21 +345,28 @@ export function useRunTracker() {
       bankedSeconds.current + (startedAt.current ? (Date.now() - startedAt.current) / 1000 : 0);
     startedAt.current = null;
     paused.current = false;
+    hiddenAt.current = null;
+    gapPending.current = null;
     setStatus("idle");
     setElapsed(finalElapsed);
+    clearDraft();
     return {
       distanceKm,
       seconds: Math.round(finalElapsed),
       route,
+      estimatedKm,
+      backgroundSeconds,
     };
-  }, [distanceKm, route, stopSensors]);
+  }, [distanceKm, route, estimatedKm, backgroundSeconds, stopSensors, clearDraft]);
 
   const reset = useCallback(() => {
     stopSensors();
     setStatus("idle");
     setDistanceKm(0);
+    setEstimatedKm(0);
     setElapsed(0);
     setRoute([]);
+    setGaps([]);
     setAccuracy(null);
     setCurrentPace(null);
     setGpsError(null);
@@ -237,13 +374,17 @@ export function useRunTracker() {
     startedAt.current = null;
     bankedSeconds.current = 0;
     paused.current = false;
+    hiddenAt.current = null;
+    gapPending.current = null;
     lastPoint.current = null;
     recent.current = [];
-  }, [stopSensors]);
+    clearDraft();
+  }, [stopSensors, clearDraft]);
 
   return {
     status,
     distanceKm,
+    estimatedKm,
     elapsed,
     accuracy,
     signalWeak,
@@ -252,6 +393,11 @@ export function useRunTracker() {
     route,
     currentPace,
     avgPace,
+    gaps,
+    backgroundSeconds,
+    recoverable,
+    recover,
+    discardRecovery,
     start,
     pause,
     resume,
