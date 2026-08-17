@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
-import { Flame, Target, TrendingUp, Trophy, Calendar, Route } from "lucide-react";
+import { Flame, Target, TrendingUp, Trophy, Calendar, Route, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useLeaderboard, type BoardRow } from "@/hooks/useLeaderboard";
 import { formatDuration } from "@/lib/running";
 
 type BoardKey = "total" | "five" | "ten" | "consistency" | "improved" | "streak";
+type RunType = "all" | "gps" | "manual";
 
 const BOARDS: { key: BoardKey; label: string; icon: typeof Trophy }[] = [
   { key: "total", label: "Total distance", icon: Route },
@@ -49,18 +50,65 @@ function metric(board: BoardKey, r: BoardRow): { value: number | null; label: st
 
 const ASCENDING: BoardKey[] = ["five", "ten"];
 
+const SELECT_CLASS =
+  "w-full appearance-none rounded-xl border border-border bg-card px-3 py-2 text-xs font-semibold text-foreground";
+
 export function LeaderboardScreen() {
   const { user } = useAuth();
   const { rows, loading, error } = useLeaderboard();
   const [board, setBoard] = useState<BoardKey>("total");
+  const [dept, setDept] = useState("all");
+  const [gender, setGender] = useState("all");
+  const [runType, setRunType] = useState<RunType>("all");
+
+  // Option lists come from whoever is actually on the board, so they always match the data.
+  const departments = useMemo(
+    () =>
+      [...new Set(rows.map((r) => r.org).filter((o): o is string => !!o))].sort((a, b) =>
+        a.localeCompare(b),
+      ),
+    [rows],
+  );
+  const genders = useMemo(
+    () =>
+      [...new Set(rows.map((r) => r.gender).filter((g): g is string => !!g))].sort((a, b) =>
+        a.localeCompare(b),
+      ),
+    [rows],
+  );
+
+  // If a filtered-on value disappears from the data, fall back rather than showing an empty board.
+  const deptValue = dept !== "all" && !departments.includes(dept) ? "all" : dept;
+  const genderValue = gender !== "all" && !genders.includes(gender) ? "all" : gender;
+
+  const filtered = useMemo(
+    () =>
+      rows.filter((r) => {
+        if (deptValue !== "all" && r.org !== deptValue) return false;
+        if (genderValue !== "all" && r.gender !== genderValue) return false;
+        if (runType === "gps" && r.gps_runs <= 0) return false;
+        if (runType === "manual" && r.manual_runs <= 0) return false;
+        return true;
+      }),
+    [rows, deptValue, genderValue, runType],
+  );
 
   const ranked = useMemo(() => {
     const asc = ASCENDING.includes(board);
-    return rows
+    return filtered
       .map((r) => ({ row: r, ...metric(board, r) }))
       .filter((e) => e.value != null)
       .sort((a, b) => (asc ? a.value! - b.value! : b.value! - a.value!));
-  }, [rows, board]);
+  }, [filtered, board]);
+
+  const activeFilters =
+    (deptValue !== "all" ? 1 : 0) + (genderValue !== "all" ? 1 : 0) + (runType !== "all" ? 1 : 0);
+
+  const clearFilters = () => {
+    setDept("all");
+    setGender("all");
+    setRunType("all");
+  };
 
   const myIndex = ranked.findIndex((e) => e.row.user_id === user?.id);
   const chase = myIndex > 0 ? ranked[myIndex - 1] : null;
@@ -75,7 +123,7 @@ export function LeaderboardScreen() {
         <h1 className="text-2xl font-bold">Leaderboard</h1>
       </header>
 
-      <div className="-mx-4 mb-5 flex gap-2 overflow-x-auto px-4 pb-1">
+      <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 pb-1">
         {BOARDS.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -91,6 +139,77 @@ export function LeaderboardScreen() {
             {label}
           </button>
         ))}
+      </div>
+
+      <div className="mb-3 grid grid-cols-3 gap-2">
+        <label className="block">
+          <span className="num mb-1 block text-[9px] tracking-[0.14em] text-muted-foreground uppercase">
+            Department
+          </span>
+          <select
+            value={deptValue}
+            onChange={(e) => setDept(e.target.value)}
+            className={SELECT_CLASS}
+          >
+            <option value="all">All</option>
+            {departments.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="num mb-1 block text-[9px] tracking-[0.14em] text-muted-foreground uppercase">
+            Gender
+          </span>
+          <select
+            value={genderValue}
+            onChange={(e) => setGender(e.target.value)}
+            className={SELECT_CLASS}
+          >
+            <option value="all">Everyone</option>
+            {genders.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="num mb-1 block text-[9px] tracking-[0.14em] text-muted-foreground uppercase">
+            Run type
+          </span>
+          <select
+            value={runType}
+            onChange={(e) => setRunType(e.target.value as RunType)}
+            className={SELECT_CLASS}
+          >
+            <option value="all">Any</option>
+            <option value="gps">GPS</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="mb-5 flex items-center gap-3">
+        <p className="num text-[10px] tracking-[0.14em] text-muted-foreground uppercase">
+          {activeFilters > 0
+            ? `${ranked.length} of ${rows.length} runners`
+            : `${rows.length} runner${rows.length === 1 ? "" : "s"}`}
+        </p>
+        {activeFilters > 0 && (
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[10px] font-semibold text-muted-foreground"
+          >
+            <X className="size-3" />
+            Clear
+          </button>
+        )}
       </div>
 
       {chase && me && (
@@ -119,7 +238,9 @@ export function LeaderboardScreen() {
       {error && <p className="text-sm text-destructive">{error}</p>}
       {!loading && ranked.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          No results on this board yet. Record a run to get on it.
+          {activeFilters > 0
+            ? "Nobody on this board matches those filters. Try clearing one."
+            : "No results on this board yet. Record a run to get on it."}
         </p>
       )}
 
