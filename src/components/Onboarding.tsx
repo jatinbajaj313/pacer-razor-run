@@ -4,8 +4,17 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAuth } from "@/hooks/useAuth";
+import { DEPARTMENTS } from "@/lib/departments";
 import { parseDurationInput, formatPace } from "@/lib/running";
+
 
 const DISTANCES = [3, 5, 10] as const;
 const GENDERS = ["Man", "Woman", "Prefer not to say"] as const;
