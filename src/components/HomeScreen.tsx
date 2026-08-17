@@ -143,7 +143,7 @@ function Ring({ pct }: { pct: number }) {
   const c = 2 * Math.PI * r;
   return (
     <svg viewBox="0 0 80 80" className="size-20 -rotate-90">
-      <circle cx="40" cy="40" r={r} fill="none" stroke="hsl(var(--border))" strokeWidth="8" />
+      <circle cx="40" cy="40" r={r} fill="none" stroke="currentColor" className="text-border" strokeWidth="8" />
       <circle
         cx="40"
         cy="40"
