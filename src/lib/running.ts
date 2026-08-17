@@ -72,8 +72,23 @@ export function parseDurationInput(value: string): number | null {
   return seconds;
 }
 
-export const GPS_ACCURACY_LIMIT_M = 40;
+/**
+ * Discard a GPS reading when the device reports worse accuracy than this.
+ * 40 m was too strict: under tree cover, near buildings, or on a cheap phone,
+ * 40-60 m readings are normal and the run silently recorded 0.00 km.
+ */
+export const GPS_ACCURACY_LIMIT_M = 65;
+/** Below this, treat the signal as weak and tell the user rather than failing quietly. */
+export const GPS_ACCURACY_WARN_M = 30;
 export const MIN_MOVE_M = 2;
+
+/**
+ * Point-to-point jitter ceiling for live tracking. NOT a human speed limit:
+ * a real 18 km/h stride plus 5 m of GPS wobble can imply 36 km/h between two
+ * readings, and throwing that away loses genuine distance. Keep this loose and
+ * do the plausibility checking on the finished run instead, via checkRun.
+ */
+export const MAX_GPS_JITTER_KMH = 45;
 
 /**
  * Plausibility limits, applied to MANUAL entries as well as GPS.
@@ -86,7 +101,8 @@ export const MAX_PACE_SEC_PER_KM = 900; // 15:00/km -> slow walk
 export const MIN_RUN_KM = 0.3;
 export const MAX_RUN_KM = 100;
 export const MAX_RUN_SECONDS = 24 * 3600;
-export const MAX_SPEED_KMH = 3600 / MIN_PACE_SEC_PER_KM; // 21.8, was 30
+/** Fastest plausible average speed for a whole run. Used by checkRun, not by the tracker. */
+export const MAX_SPEED_KMH = 3600 / MIN_PACE_SEC_PER_KM; // 21.8 km/h
 
 export type RunCheck = { ok: true } | { ok: false; reason: string };
 
