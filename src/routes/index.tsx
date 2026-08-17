@@ -1,11 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { LogOut } from "lucide-react";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import { SignInScreen } from "@/components/SignInScreen";
 import { Onboarding } from "@/components/Onboarding";
 import { RecordScreen } from "@/components/RecordScreen";
+import { HomeScreen } from "@/components/HomeScreen";
+import { LeaderboardScreen } from "@/components/LeaderboardScreen";
+import { PlanScreen } from "@/components/PlanScreen";
+import { YouScreen } from "@/components/YouScreen";
 import { BottomNav, type TabKey } from "@/components/BottomNav";
+
 
 export const Route = createFileRoute("/")({
   head: () => ({
