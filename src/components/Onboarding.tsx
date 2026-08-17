@@ -4,8 +4,17 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAuth } from "@/hooks/useAuth";
+import { DEPARTMENTS } from "@/lib/departments";
 import { parseDurationInput, formatPace } from "@/lib/running";
+
 
 const DISTANCES = [3, 5, 10] as const;
 const GENDERS = ["Man", "Woman", "Prefer not to say"] as const;
@@ -98,16 +107,25 @@ export function Onboarding() {
 
       <section className="mt-7 space-y-3">
         <Label htmlFor="org" className="text-sm text-muted-foreground">
-          Org / team
+          Department
         </Label>
-        <Input
-          id="org"
-          value={org}
-          placeholder="e.g. Payments Platform"
-          onChange={(e) => setOrg(e.target.value)}
-          className="h-14 rounded-xl border-input bg-card text-base"
-        />
+        <Select value={org} onValueChange={setOrg}>
+          <SelectTrigger
+            id="org"
+            className="h-14 rounded-xl border-input bg-card text-base data-[placeholder]:text-muted-foreground"
+          >
+            <SelectValue placeholder="Select your department" />
+          </SelectTrigger>
+          <SelectContent className="max-h-72">
+            {DEPARTMENTS.map((d) => (
+              <SelectItem key={d} value={d} className="text-base">
+                {d}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </section>
+
 
       <section className="mt-7 space-y-3">
         <Label className="text-sm text-muted-foreground">Gender (for the board filters)</Label>

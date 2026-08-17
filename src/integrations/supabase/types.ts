@@ -122,6 +122,9 @@ export type Database = {
         Args: never
         Returns: {
           avatar_url: string
+          gender: string
+          gps_runs: number
+          manual_runs: number
           name: string
           org: string
           run_count: number
