@@ -19,6 +19,14 @@ export type BackgroundGap = { seconds: number; straightLineKm: number };
 const DRAFT_KEY = "pacer:run-in-progress";
 /** Ignore blips; longer than this counts as a real background gap. */
 const GAP_THRESHOLD_SECONDS = 15;
+/**
+ * No measured movement for this long and we treat the run as over. Long enough
+ * to survive a traffic light, a chat at the gate, or a stretch; short enough
+ * that forgetting to stop doesn't ruin the run.
+ */
+const IDLE_LIMIT_SECONDS = 20 * 60;
+/** Warn the runner before we auto-finish. */
+const IDLE_WARN_SECONDS = 5 * 60;
 
 type Draft = {
   startedAtEpoch: number;
@@ -28,6 +36,10 @@ type Draft = {
   gaps: BackgroundGap[];
   route: GeoPoint[];
   savedAt: number;
+  /** Seconds of running up to the last measured movement — the tail is trimmed. */
+  activeSeconds: number;
+  /** Wall-clock ms when distance last increased. */
+  lastMoveAt: number;
 };
 
 function readDraft(): Draft | null {
@@ -62,11 +74,19 @@ export function useRunTracker() {
   const paused = useRef(false);
   const hiddenAt = useRef<number | null>(null);
   const gapPending = useRef<number | null>(null);
+  /** Wall clock at the last accepted distance increase. */
+  const lastMoveAt = useRef<number | null>(null);
+  /** Elapsed reading at that same moment, so the idle tail can be cut off. */
+  const activeAtLastMove = useRef(0);
+  const [idleSeconds, setIdleSeconds] = useState(0);
 
   const avgPace = paceFrom(distanceKm, elapsed);
   const signalWeak = accuracy != null && accuracy > GPS_ACCURACY_WARN_M;
   const noFixYet = status !== "idle" && fixCount === 0;
   const backgroundSeconds = gaps.reduce((a, g) => a + g.seconds, 0);
+  const idleWarning = status === "running" && distanceKm > 0 && idleSeconds >= IDLE_WARN_SECONDS;
+  const shouldAutoFinish =
+    status === "running" && distanceKm > 0 && idleSeconds >= IDLE_LIMIT_SECONDS;
 
   // ---------- draft persistence: an iOS tab discard shouldn't erase the run ----------
   const saveDraft = useCallback(() => {
@@ -79,6 +99,8 @@ export function useRunTracker() {
       gaps,
       route,
       savedAt: Date.now(),
+      activeSeconds: activeAtLastMove.current,
+      lastMoveAt: lastMoveAt.current ?? 0,
     };
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
@@ -195,6 +217,7 @@ export function useRunTracker() {
       lastPoint.current = point;
       setRoute((r) => [...r, point]);
       const km = meters / 1000;
+      lastMoveAt.current = Date.now();
       setGaps((g) => [...g, { seconds: gapSeconds, straightLineKm: km }]);
       setEstimatedKm((e) => e + km);
       setDistanceKm((d) => d + km);
@@ -211,6 +234,11 @@ export function useRunTracker() {
 
     lastPoint.current = point;
     setRoute((r) => [...r, point]);
+    lastMoveAt.current = Date.now();
+    if (startedAt.current) {
+      activeAtLastMove.current =
+        bankedSeconds.current + (Date.now() - startedAt.current) / 1000;
+    }
 
     setDistanceKm((km) => {
       const nextKm = km + meters / 1000;
@@ -230,6 +258,7 @@ export function useRunTracker() {
   const tick = useCallback(() => {
     if (startedAt.current && !paused.current) {
       setElapsed(bankedSeconds.current + (Date.now() - startedAt.current) / 1000);
+      setIdleSeconds(lastMoveAt.current ? (Date.now() - lastMoveAt.current) / 1000 : 0);
     }
   }, []);
 
@@ -286,6 +315,9 @@ export function useRunTracker() {
     paused.current = false;
     hiddenAt.current = null;
     gapPending.current = null;
+    lastMoveAt.current = Date.now();
+    activeAtLastMove.current = 0;
+    setIdleSeconds(0);
     startedAt.current = Date.now();
     setStatus("running");
     beginWatch();
@@ -312,6 +344,31 @@ export function useRunTracker() {
     setStatus("running");
     beginWatch();
   }, [recoverable, beginWatch]);
+
+  /**
+   * Save an abandoned run straight from the draft, without restarting GPS.
+   * This is the common "forgot to stop, phone died, opened the app next day"
+   * case: the distance is real, so the run should not be thrown away.
+   */
+  const finishRecovered = useCallback(() => {
+    const d = recoverable;
+    if (!d) return null;
+    const seconds = Math.round(
+      d.activeSeconds > 0
+        ? d.activeSeconds
+        : d.bankedSeconds + (d.startedAtEpoch ? (d.savedAt - d.startedAtEpoch) / 1000 : 0),
+    );
+    setRecoverable(null);
+    clearDraft();
+    return {
+      distanceKm: d.distanceKm,
+      seconds,
+      route: d.route ?? [],
+      estimatedKm: d.estimatedKm ?? 0,
+      backgroundSeconds: (d.gaps ?? []).reduce((a, g) => a + g.seconds, 0),
+      ranOn: new Date(d.lastMoveAt || d.savedAt).toLocaleDateString("en-CA"),
+    };
+  }, [recoverable, clearDraft]);
 
   const discardRecovery = useCallback(() => {
     setRecoverable(null);
@@ -341,21 +398,34 @@ export function useRunTracker() {
 
   const stop = useCallback(() => {
     stopSensors();
-    const finalElapsed =
+    const rawElapsed =
       bankedSeconds.current + (startedAt.current ? (Date.now() - startedAt.current) / 1000 : 0);
+
+    // Trim time spent not moving at the end. Without this, forgetting to stop
+    // for two hours turns a 5:30/km run into 22:15/km, which checkRun then
+    // rejects outright — so the run would be lost, not merely wrong.
+    const idleTail = lastMoveAt.current ? (Date.now() - lastMoveAt.current) / 1000 : 0;
+    const trimmed =
+      idleTail >= IDLE_WARN_SECONDS && activeAtLastMove.current > 0
+        ? activeAtLastMove.current
+        : rawElapsed;
+
     startedAt.current = null;
     paused.current = false;
     hiddenAt.current = null;
     gapPending.current = null;
+    lastMoveAt.current = null;
     setStatus("idle");
-    setElapsed(finalElapsed);
+    setElapsed(trimmed);
+    setIdleSeconds(0);
     clearDraft();
     return {
       distanceKm,
-      seconds: Math.round(finalElapsed),
+      seconds: Math.round(trimmed),
       route,
       estimatedKm,
       backgroundSeconds,
+      trimmedSeconds: Math.round(Math.max(0, rawElapsed - trimmed)),
     };
   }, [distanceKm, route, estimatedKm, backgroundSeconds, stopSensors, clearDraft]);
 
@@ -377,6 +447,9 @@ export function useRunTracker() {
     hiddenAt.current = null;
     gapPending.current = null;
     lastPoint.current = null;
+    lastMoveAt.current = null;
+    activeAtLastMove.current = 0;
+    setIdleSeconds(0);
     recent.current = [];
     clearDraft();
   }, [stopSensors, clearDraft]);
@@ -395,8 +468,12 @@ export function useRunTracker() {
     avgPace,
     gaps,
     backgroundSeconds,
+    idleSeconds,
+    idleWarning,
+    shouldAutoFinish,
     recoverable,
     recover,
+    finishRecovered,
     discardRecovery,
     start,
     pause,
