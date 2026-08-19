@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -21,9 +21,14 @@ type AuthState = {
   user: User | null;
   profile: Profile | null;
   domainError: string | null;
+  /** Signed in fine, but the profile row couldn't be read or created. */
+  profileError: string | null;
   refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
 };
+
+const PROFILE_COLUMNS =
+  "id, name, avatar_url, org, gender, race_distance, target_time, onboarded";
 
 const AuthContext = createContext<AuthState | null>(null);
 
@@ -32,46 +37,92 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [domainError, setDomainError] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
-  const loadProfile = useCallback(async (user: User) => {
-    try {
-      const { data } = await supabase
-        .from("profiles")
-        .select("id, name, avatar_url, org, gender, race_distance, target_time, onboarded")
-        .eq("id", user.id)
-        .maybeSingle();
+  /**
+   * Sign-in fires applySession from two places — the redirect handler and the
+   * SIGNED_IN event. Without this, both race to create the profile row: the
+   * loser gets a duplicate-key error and used to blank out the profile that the
+   * winner had just created. New users hung on "Setting up your profile…";
+   * existing users were never affected because they never reached the insert.
+   */
+  const inFlight = useRef<Promise<void> | null>(null);
+  const handledUserId = useRef<string | null>(null);
 
-      if (data) {
-        setProfile(data as Profile);
-        return;
-      }
+  const fetchProfile = useCallback(async (userId: string) => {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select(PROFILE_COLUMNS)
+      .eq("id", userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return (data as Profile | null) ?? null;
+  }, []);
 
-      const meta = user.user_metadata ?? {};
-      const inserted = await supabase
-        .from("profiles")
-        .insert({
-          id: user.id,
-          name:
+  const loadProfile = useCallback(
+    async (user: User) => {
+      if (inFlight.current) return inFlight.current; // collapse concurrent calls
+
+      const work = (async () => {
+        setProfileError(null);
+        try {
+          const existing = await fetchProfile(user.id);
+          if (existing) {
+            setProfile(existing);
+            return;
+          }
+
+          const meta = user.user_metadata ?? {};
+          const name =
             (meta["full_name"] as string) ||
             (meta["name"] as string) ||
             user.email ||
-            "Runner",
-          avatar_url: (meta["avatar_url"] as string) || (meta["picture"] as string) || null,
-        })
-        .select("id, name, avatar_url, org, gender, race_distance, target_time, onboarded")
-        .maybeSingle();
+            "Runner";
+          const avatar =
+            (meta["avatar_url"] as string) || (meta["picture"] as string) || null;
 
-      if (inserted.error) setDomainError(inserted.error.message);
-      setProfile((inserted.data as Profile) ?? null);
-    } catch (err) {
-      console.error(err);
-      setDomainError(
-        err instanceof Error ? err.message : "Could not load your profile. Please retry.",
-      );
-      setProfile(null);
-    }
-  }, []);
+          // upsert, not insert: if the other call won the race, this is a no-op
+          // that returns the existing row instead of an error.
+          const { data, error } = await supabase
+            .from("profiles")
+            .upsert({ id: user.id, name, avatar_url: avatar }, { onConflict: "id" })
+            .select(PROFILE_COLUMNS)
+            .maybeSingle();
 
+          if (data) {
+            setProfile(data as Profile);
+            return;
+          }
+
+          // Upsert blocked (RLS, or a NOT NULL column we don't supply). The row
+          // may still exist from the other call, so look again before failing.
+          const afterward = await fetchProfile(user.id);
+          if (afterward) {
+            setProfile(afterward);
+            return;
+          }
+          throw new Error(error?.message ?? "Could not create your profile.");
+        } catch (err) {
+          console.error("[profile]", err);
+          setProfileError(
+            err instanceof Error
+              ? err.message
+              : "Could not set up your profile. Tap retry.",
+          );
+          // Deliberately leave `profile` as-is rather than nulling it: a failed
+          // write must never erase a profile that already loaded.
+        }
+      })();
+
+      inFlight.current = work;
+      try {
+        await work;
+      } finally {
+        inFlight.current = null;
+      }
+    },
+    [fetchProfile],
+  );
 
   const applySession = useCallback(
     async (next: Session | null) => {
@@ -80,28 +131,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setDomainError(`Pacer is only open to @${ALLOWED_DOMAIN} accounts.`);
         setSession(null);
         setProfile(null);
+        handledUserId.current = null;
         await supabase.auth.signOut();
         setLoading(false);
         return;
       }
+
       setSession(next);
-      if (next) {
-        await loadProfile(next.user);
-      } else {
+
+      if (!next) {
         setProfile(null);
+        handledUserId.current = null;
+        setLoading(false);
+        return;
       }
+
+      // Skip redundant work when both entry points report the same user.
+      if (handledUserId.current === next.user.id && profile) {
+        setLoading(false);
+        return;
+      }
+      handledUserId.current = next.user.id;
+
+      await loadProfile(next.user);
       setLoading(false);
     },
-    [loadProfile],
+    [loadProfile, profile],
   );
 
   useEffect(() => {
     let active = true;
 
-    // The Google flow can return to this page as a full-page redirect with the
-    // tokens in either the query string or the hash. Consume them before we
-    // read the stored session, otherwise the app looks signed out (or blank)
-    // right after sign-in.
+    // The Google flow can return here as a full-page redirect with tokens in
+    // the query string or the hash. Consume them before reading the stored
+    // session, otherwise the app looks signed out right after sign-in.
     async function consumeRedirectTokens(): Promise<boolean> {
       if (typeof window === "undefined") return false;
       const search = new URLSearchParams(window.location.search);
@@ -158,7 +221,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [applySession]);
 
-
   const refreshProfile = useCallback(async () => {
     if (session?.user) await loadProfile(session.user);
   }, [session, loadProfile]);
@@ -167,6 +229,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);
+    setProfileError(null);
+    handledUserId.current = null;
   }, []);
 
   return (
@@ -177,6 +241,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user: session?.user ?? null,
         profile,
         domainError,
+        profileError,
         refreshProfile,
         signOut,
       }}
