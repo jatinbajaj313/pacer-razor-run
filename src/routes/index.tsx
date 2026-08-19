@@ -1,57 +1,27 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { AuthProvider, useAuth } from "@/hooks/useAuth";
-import { SignInScreen } from "@/components/SignInScreen";
-import { Onboarding } from "@/components/Onboarding";
-import { RecordScreen } from "@/components/RecordScreen";
-import { HomeScreen } from "@/components/HomeScreen";
-import { LeaderboardScreen } from "@/components/LeaderboardScreen";
-import { PlanScreen } from "@/components/PlanScreen";
-import { YouScreen } from "@/components/YouScreen";
-import { BottomNav, type TabKey } from "@/components/BottomNav";
+PATCH FOR src/routes/index.tsx
+================================
 
+Two small edits. Everything else in the file stays as it is.
 
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Pacer — Razor Run 2026 training & leaderboard" },
-      {
-        name: "description",
-        content:
-          "Track your runs with GPS, follow an adaptive training plan and climb the Razor Run 2026 leaderboard.",
-      },
-      { property: "og:title", content: "Pacer — Razor Run 2026" },
-      {
-        property: "og:description",
-        content:
-          "GPS run tracking, live leaderboards and an adaptive plan for Razor Run 2026 in Bengaluru.",
-      },
-    ],
-  }),
-  component: PacerApp,
-});
+--------------------------------------------------------------------
+EDIT 1 — pull the two new values out of useAuth
+--------------------------------------------------------------------
 
-function PacerApp() {
-  return (
-    <AuthProvider>
-      <Shell />
-    </AuthProvider>
-  );
-}
+FIND this line:
 
-function Shell() {
   const { loading, session, profile, domainError } = useAuth();
-  const [tab, setTab] = useState<TabKey>("home");
 
-  if (loading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center">
-        <p className="num text-sm tracking-widest text-muted-foreground uppercase">Loading…</p>
-      </main>
-    );
-  }
+REPLACE with:
 
-  if (!session) return <SignInScreen domainError={domainError} />;
+  const { loading, session, profile, domainError, profileError, refreshProfile } = useAuth();
+
+
+--------------------------------------------------------------------
+EDIT 2 — stop hanging forever when the profile can't be created
+--------------------------------------------------------------------
+
+FIND this block:
+
   if (!profile) {
     return (
       <main className="flex min-h-screen items-center justify-center">
@@ -59,21 +29,40 @@ function Shell() {
       </main>
     );
   }
-  if (!profile.onboarded) return <Onboarding />;
 
-  return (
-    <div className="mx-auto min-h-screen w-full max-w-md">
-      {tab === "home" && <HomeScreen onGoBoard={() => setTab("board")} />}
-      {tab === "record" && <RecordScreen />}
-      {tab === "board" && <LeaderboardScreen />}
-      {tab === "plan" && <PlanScreen />}
-      {tab === "you" && <YouScreen />}
-      <BottomNav
-        active={tab}
-        onSelect={setTab}
-        enabled={["home", "record", "board", "plan", "you"]}
-      />
-    </div>
-  );
-}
+REPLACE with:
 
+  if (!profile) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center">
+        {profileError ? (
+          <>
+            <p className="text-sm font-semibold">We couldn't finish setting up your profile</p>
+            <p className="text-sm text-muted-foreground">{profileError}</p>
+            <button
+              type="button"
+              onClick={() => void refreshProfile()}
+              className="rounded-xl border border-border bg-card px-4 py-2.5 text-sm font-semibold"
+            >
+              Try again
+            </button>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">Setting up your profile…</p>
+        )}
+      </main>
+    );
+  }
+
+
+--------------------------------------------------------------------
+Why this matters
+--------------------------------------------------------------------
+
+Before: if profile creation failed, `profile` stayed null and this screen showed
+"Setting up your profile…" indefinitely. The user had no path forward and no idea
+what went wrong — that's the "something went wrong" your colleagues reported.
+
+After: the actual database error is shown, with a retry that doesn't require
+signing out and back in. It also makes the real cause visible to you during the
+demo instead of a spinner.
