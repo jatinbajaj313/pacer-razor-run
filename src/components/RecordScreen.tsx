@@ -137,8 +137,8 @@ export function RecordScreen() {
 
   async function handleStop() {
     const result = tracker.stop();
-    if (result.distanceKm < 0.05) {
-      toast.error("That run was too short to save.");
+    if (result.distanceKm <= 0) {
+      toast.error("No distance recorded — GPS never got a fix.");
       tracker.reset();
       return;
     }
