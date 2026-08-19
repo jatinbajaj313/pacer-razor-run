@@ -5,6 +5,7 @@ import { useMyRuns } from "@/hooks/useMyRuns";
 import { useLeaderboard } from "@/hooks/useLeaderboard";
 import { buildPlan } from "@/lib/plan";
 import { RACE_DATE, formatDuration, formatPace } from "@/lib/running";
+import { ZONE_COLOR, trainingLoad } from "@/lib/load";
 
 /** One source of truth for the race, shared with the leaderboard. 6am IST start. */
 const RACE_AT = new Date(`${RACE_DATE}T06:00:00+05:30`);
@@ -81,6 +82,8 @@ export function HomeScreen({ onGoBoard }: { onGoBoard: () => void }) {
     () => predictRace(runs, raceDistanceKm),
     [runs, raceDistanceKm],
   );
+
+  const load = useMemo(() => trainingLoad(runs, { daysToRace }), [runs, daysToRace]);
 
   const ranked = [...rows]
     .filter((r) => r.total_km > 0)
@@ -216,6 +219,51 @@ export function HomeScreen({ onGoBoard }: { onGoBoard: () => void }) {
             style={{ width: `${pct * 100}%` }}
           />
         </div>
+      </section>
+
+      {/* ---------- injury risk: the thing that decides whether you make the start line ---------- */}
+      <section
+        className={`card-surface mt-4 p-5 ${
+          load.zone === "high" ? "border-danger/40" : load.zone === "caution" ? "border-warning/40" : ""
+        }`}
+      >
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="num text-[10px] tracking-[0.18em] text-muted-foreground uppercase">
+            Training load
+          </p>
+          {load.ratio != null && (
+            <p className={`num text-sm font-bold ${ZONE_COLOR[load.zone]}`}>
+              {load.ratio.toFixed(2)}
+              <span className="text-[9px] font-normal text-muted-foreground"> ACWR</span>
+            </p>
+          )}
+        </div>
+
+        <p className={`mt-2 font-semibold ${ZONE_COLOR[load.zone]}`}>{load.headline}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{load.detail}</p>
+
+        {load.ratio != null && (
+          <>
+            {/* 0.8-1.3 is the sustainable band; the marker shows where this week sits */}
+            <div className="relative mt-4 h-1.5 overflow-hidden rounded-full bg-elevated">
+              <span
+                aria-hidden
+                className="absolute inset-y-0 bg-success/30"
+                style={{ left: `${(0.8 / 2) * 100}%`, width: `${(0.5 / 2) * 100}%` }}
+              />
+              <span
+                aria-hidden
+                className="absolute inset-y-0 w-[3px] rounded-full bg-foreground"
+                style={{ left: `calc(${Math.min(100, (load.ratio / 2) * 100)}% - 1.5px)` }}
+              />
+            </div>
+            <div className="num mt-1.5 flex justify-between text-[9px] tracking-[0.1em] text-muted-foreground uppercase">
+              <span>Easy</span>
+              <span>Sustainable</span>
+              <span>Risky</span>
+            </div>
+          </>
+        )}
       </section>
 
       {/* ---------- today ---------- */}
