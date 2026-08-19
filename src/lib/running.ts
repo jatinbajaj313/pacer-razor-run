@@ -98,7 +98,7 @@ export const MAX_GPS_JITTER_KMH = 45;
  */
 export const MIN_PACE_SEC_PER_KM = 165; // 2:45/km  -> 21.8 km/h
 export const MAX_PACE_SEC_PER_KM = 900; // 15:00/km -> slow walk
-export const MIN_RUN_KM = 0.3;
+export const MIN_RUN_KM = 0.1;
 export const MAX_RUN_KM = 100;
 export const MAX_RUN_SECONDS = 24 * 3600;
 /** Fastest plausible average speed for a whole run. Used by checkRun, not by the tracker. */
