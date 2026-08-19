@@ -98,7 +98,14 @@ export const MAX_GPS_JITTER_KMH = 45;
  */
 export const MIN_PACE_SEC_PER_KM = 165; // 2:45/km  -> 21.8 km/h
 export const MAX_PACE_SEC_PER_KM = 900; // 15:00/km -> slow walk
-export const MIN_RUN_KM = 0.1;
+/** Anything above zero is recorded. */
+export const MIN_RUN_KM = 0.001;
+/**
+ * Pace is only a meaningful plausibility signal over a real distance: 10 m in
+ * 10 s is 1000 s/km, which looks absurd but is just a short sprint. Below this
+ * we still block superhuman speeds, but skip the too-slow test.
+ */
+export const PACE_CHECK_MIN_KM = 0.5;
 export const MAX_RUN_KM = 100;
 export const MAX_RUN_SECONDS = 24 * 3600;
 /** Fastest plausible average speed for a whole run. Used by checkRun, not by the tracker. */
@@ -115,8 +122,8 @@ export function checkRun(distanceKm: number, seconds: number): RunCheck {
   if (!Number.isFinite(distanceKm) || !Number.isFinite(seconds)) {
     return { ok: false, reason: "Enter a distance and a time." };
   }
-  if (distanceKm < MIN_RUN_KM) {
-    return { ok: false, reason: `Runs need to be at least ${MIN_RUN_KM} km.` };
+  if (distanceKm <= 0) {
+    return { ok: false, reason: "Enter a distance greater than zero." };
   }
   if (distanceKm > MAX_RUN_KM) {
     return { ok: false, reason: `${distanceKm} km looks like a typo — check the distance.` };
@@ -128,7 +135,7 @@ export function checkRun(distanceKm: number, seconds: number): RunCheck {
     return { ok: false, reason: "That time is longer than a day — check the format." };
   }
   const pace = seconds / distanceKm;
-  if (pace > MAX_PACE_SEC_PER_KM) {
+  if (distanceKm >= PACE_CHECK_MIN_KM && pace > MAX_PACE_SEC_PER_KM) {
     return { ok: false, reason: "That time is far too slow for the distance — check both fields." };
   }
   if (pace < MIN_PACE_SEC_PER_KM) {
