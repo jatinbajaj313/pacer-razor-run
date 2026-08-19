@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Satellite,
@@ -135,12 +135,30 @@ export function RecordScreen() {
     return true;
   }
 
+  // If the runner forgot to stop, finish for them once movement has clearly
+  // ended. Guarded by a ref so a re-render can't save the same run twice.
+  const autoFinished = useRef(false);
+  useEffect(() => {
+    if (tracker.shouldAutoFinish && !autoFinished.current && !saving) {
+      autoFinished.current = true;
+      toast.info("No movement for 20 minutes — saving your run and trimming the idle time.");
+      void handleStop();
+    }
+    if (tracker.status === "idle") autoFinished.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracker.shouldAutoFinish, tracker.status, saving]);
+
   async function handleStop() {
     const result = tracker.stop();
     if (result.distanceKm <= 0) {
       toast.error("No distance recorded — GPS never got a fix.");
       tracker.reset();
       return;
+    }
+    if (result.trimmedSeconds > 60) {
+      toast.info(
+        `Trimmed ${formatDuration(result.trimmedSeconds)} of standing still from the end.`,
+      );
     }
     if (result.estimatedKm > 0.05) {
       toast.warning(
@@ -154,6 +172,18 @@ export function RecordScreen() {
       route: result.route,
     });
     if (saved) tracker.reset();
+  }
+
+  async function handleSaveRecovered() {
+    const result = tracker.finishRecovered();
+    if (!result) return;
+    await saveRun({
+      distanceKm: result.distanceKm,
+      seconds: result.seconds,
+      source: "gps",
+      ranOn: result.ranOn,
+      route: result.route,
+    });
   }
 
   async function simulateRun() {
@@ -261,12 +291,23 @@ export function RecordScreen() {
             Unfinished run found
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            {tracker.recoverable.distanceKm.toFixed(2)} km already recorded. Pick it up or bin it.
+            {tracker.recoverable.distanceKm.toFixed(2)} km recorded
+            {tracker.recoverable.activeSeconds > 0
+              ? ` in ${formatDuration(tracker.recoverable.activeSeconds)}`
+              : ""}
+            . Save it, carry on, or bin it.
           </p>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              onClick={() => void handleSaveRecovered()}
+              disabled={saving}
+              className="h-11 flex-1 rounded-lg bg-gradient-data text-sm font-semibold text-primary-foreground"
+            >
+              {saving ? "Saving…" : "Save it"}
+            </Button>
             <Button
               onClick={tracker.recover}
-              className="h-11 flex-1 rounded-lg bg-gradient-data text-sm font-semibold text-primary-foreground"
+              className="h-11 rounded-lg border border-border bg-card text-sm font-semibold"
             >
               Resume
             </Button>
@@ -314,6 +355,14 @@ export function RecordScreen() {
           {tracker.estimatedKm.toFixed(2)} km of this run is estimated. The app was in the
           background for {formatDuration(tracker.backgroundSeconds)}, so that stretch is a straight
           line, not your real route.
+        </p>
+      )}
+
+      {tracker.idleWarning && (
+        <p className="mt-4 flex gap-2 rounded-lg border border-warning/40 bg-card px-4 py-3 text-sm text-warning">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+          No movement for {formatDuration(tracker.idleSeconds)}. If you've finished, we'll save
+          automatically at 20 minutes and cut the standing-still time.
         </p>
       )}
 
