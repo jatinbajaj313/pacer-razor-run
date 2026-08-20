@@ -11,7 +11,14 @@ import {
 
 export type TrackerStatus = "idle" | "running" | "paused";
 
-type WakeLockLike = { release: () => Promise<void>; released: boolean };
+type WakeLockLike = {
+  release: () => Promise<void>;
+  released: boolean;
+  addEventListener: (type: "release", listener: () => void) => void;
+};
+
+/** Re-check the wake lock this often while a run is active. */
+const WAKE_LOCK_HEARTBEAT_MS = 15_000;
 
 /** A stretch where the browser was suspended and no GPS arrived. */
 export type BackgroundGap = { seconds: number; straightLineKm: number };
@@ -27,6 +34,11 @@ const GAP_THRESHOLD_SECONDS = 15;
 const IDLE_LIMIT_SECONDS = 20 * 60;
 /** Warn the runner before we auto-finish. */
 const IDLE_WARN_SECONDS = 5 * 60;
+/**
+ * No GPS callback at all for this long means tracking has stopped, not that the
+ * runner has stopped. Usually the screen locked with the phone in a pocket.
+ */
+const FIX_STALL_SECONDS = 45;
 
 type Draft = {
   startedAtEpoch: number;
@@ -79,12 +91,20 @@ export function useRunTracker() {
   /** Elapsed reading at that same moment, so the idle tail can be cut off. */
   const activeAtLastMove = useRef(0);
   const [idleSeconds, setIdleSeconds] = useState(0);
+  /** Any GPS callback, accepted or not — proves the sensor is still alive. */
+  const lastFixAt = useRef<number | null>(null);
+  const [fixStaleSeconds, setFixStaleSeconds] = useState(0);
+  /** Seconds the app spent suspended mid-run, so we can say so plainly. */
+  const [lostTrackingSeconds, setLostTrackingSeconds] = useState(0);
+  const [screenLockRisk, setScreenLockRisk] = useState(false);
 
   const avgPace = paceFrom(distanceKm, elapsed);
   const signalWeak = accuracy != null && accuracy > GPS_ACCURACY_WARN_M;
   const noFixYet = status !== "idle" && fixCount === 0;
   const backgroundSeconds = gaps.reduce((a, g) => a + g.seconds, 0);
   const idleWarning = status === "running" && distanceKm > 0 && idleSeconds >= IDLE_WARN_SECONDS;
+  /** GPS has gone quiet: tracking stopped, whatever the runner is doing. */
+  const trackingStalled = status === "running" && fixStaleSeconds >= FIX_STALL_SECONDS;
   const shouldAutoFinish =
     status === "running" && distanceKm > 0 && idleSeconds >= IDLE_LIMIT_SECONDS;
 
@@ -139,9 +159,30 @@ export function useRunTracker() {
           wakeLock?: { request: (t: string) => Promise<WakeLockLike> };
         }
       ).wakeLock;
-      if (wl && !wakeLock.current) wakeLock.current = await wl.request("screen");
+      if (!wl) {
+        // Older iOS Safari and some Android browsers have no Wake Lock API, so
+        // the screen locks on its own timer and tracking dies silently.
+        setScreenLockRisk(true);
+        return;
+      }
+      // A released sentinel is as good as none. Checking only for null meant
+      // that once the browser released the lock — which it does on every
+      // backgrounding — it was never taken again for the rest of the run.
+      if (wakeLock.current && !wakeLock.current.released) {
+        setScreenLockRisk(false);
+        return;
+      }
+      const sentinel = await wl.request("screen");
+      wakeLock.current = sentinel;
+      // The browser can drop it at any time. Clear our handle so the heartbeat
+      // takes it again rather than assuming we still hold it.
+      sentinel.addEventListener("release", () => {
+        if (wakeLock.current === sentinel) wakeLock.current = null;
+      });
+      setScreenLockRisk(false);
     } catch {
-      /* best effort */
+      // Request rejected — iOS Low Power Mode does this.
+      setScreenLockRisk(true);
     }
   }, []);
 
@@ -159,6 +200,20 @@ export function useRunTracker() {
 
   useEffect(() => stopSensors, [stopSensors]);
 
+  /**
+   * Keep the screen awake for the whole run — through pauses, through the
+   * browser quietly dropping the lock — until the runner stops it themselves.
+   * stop() and reset() are the only things that release it.
+   */
+  useEffect(() => {
+    if (status === "idle") return;
+    void requestWakeLock();
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") void requestWakeLock();
+    }, WAKE_LOCK_HEARTBEAT_MS);
+    return () => clearInterval(id);
+  }, [status, requestWakeLock]);
+
   // ---------- background handling ----------
   useEffect(() => {
     const onHidden = () => {
@@ -172,7 +227,13 @@ export function useRunTracker() {
       if (hiddenAt.current) {
         const away = (Date.now() - hiddenAt.current) / 1000;
         hiddenAt.current = null;
-        if (away >= GAP_THRESHOLD_SECONDS) gapPending.current = away;
+        if (away >= GAP_THRESHOLD_SECONDS) {
+          gapPending.current = away;
+          // Tell them immediately. Waiting for the next fix means a runner who
+          // locks the phone and later taps stop is never told that 43 of their
+          // 45 minutes were never tracked.
+          setLostTrackingSeconds((s) => s + away);
+        }
       }
     };
     const onVisibility = () =>
@@ -187,6 +248,8 @@ export function useRunTracker() {
   }, [status, requestWakeLock, saveDraft]);
 
   const handlePosition = useCallback((pos: GeolocationPosition) => {
+    lastFixAt.current = Date.now();
+    setFixStaleSeconds(0);
     const acc = pos.coords.accuracy ?? 999;
     setAccuracy(acc);
     if (acc > GPS_ACCURACY_LIMIT_M) return;
@@ -259,6 +322,7 @@ export function useRunTracker() {
     if (startedAt.current && !paused.current) {
       setElapsed(bankedSeconds.current + (Date.now() - startedAt.current) / 1000);
       setIdleSeconds(lastMoveAt.current ? (Date.now() - lastMoveAt.current) / 1000 : 0);
+      setFixStaleSeconds(lastFixAt.current ? (Date.now() - lastFixAt.current) / 1000 : 0);
     }
   }, []);
 
@@ -316,8 +380,11 @@ export function useRunTracker() {
     hiddenAt.current = null;
     gapPending.current = null;
     lastMoveAt.current = Date.now();
+    lastFixAt.current = Date.now();
     activeAtLastMove.current = 0;
     setIdleSeconds(0);
+    setFixStaleSeconds(0);
+    setLostTrackingSeconds(0);
     startedAt.current = Date.now();
     setStatus("running");
     beginWatch();
@@ -426,8 +493,9 @@ export function useRunTracker() {
       estimatedKm,
       backgroundSeconds,
       trimmedSeconds: Math.round(Math.max(0, rawElapsed - trimmed)),
+      lostTrackingSeconds: Math.round(lostTrackingSeconds),
     };
-  }, [distanceKm, route, estimatedKm, backgroundSeconds, stopSensors, clearDraft]);
+  }, [distanceKm, route, estimatedKm, backgroundSeconds, lostTrackingSeconds, stopSensors, clearDraft]);
 
   const reset = useCallback(() => {
     stopSensors();
@@ -448,8 +516,11 @@ export function useRunTracker() {
     gapPending.current = null;
     lastPoint.current = null;
     lastMoveAt.current = null;
+    lastFixAt.current = null;
     activeAtLastMove.current = 0;
     setIdleSeconds(0);
+    setFixStaleSeconds(0);
+    setLostTrackingSeconds(0);
     recent.current = [];
     clearDraft();
   }, [stopSensors, clearDraft]);
@@ -471,6 +542,10 @@ export function useRunTracker() {
     idleSeconds,
     idleWarning,
     shouldAutoFinish,
+    trackingStalled,
+    fixStaleSeconds,
+    lostTrackingSeconds,
+    screenLockRisk,
     recoverable,
     recover,
     finishRecovered,
